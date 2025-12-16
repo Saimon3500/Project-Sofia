@@ -59,9 +59,22 @@ def get_mongo_client(
     return MongoClientWrapper(settings)
 
 
+
+class CampoDefinicion(BaseModel):
+    id: str
+    tipo: str  # "texto", "numero", "fecha", "lote", "seccion", "producto", "peso", "peso_acumulado", "contenedor", "formula"
+    titulo: str
+    requerido: bool = True
+    config: dict = {}  # { "min": 0, "max": 100, "formula_expresion": "...", "variables": [] }
+    subcampos: list["CampoDefinicion"] = []  # Para subcampos/grupos
+
+
+
 class Registro(BaseModel):
     nombre: str
     codigo: str
+    es_custom: bool = False
+    campos: list[CampoDefinicion] = []
 
 
 class LoginRequest(BaseModel):
@@ -148,7 +161,12 @@ async def list_registros(client: MongoClientWrapper = Depends(get_mongo_client))
     cursor = client.db["registros"].find({})
     registros: list[Registro] = []
     async for item in cursor:
-        registros.append(Registro(nombre=item.get("nombre", ""), codigo=item.get("codigo", "")))
+        registros.append(Registro(
+            nombre=item.get("nombre", ""), 
+            codigo=item.get("codigo", ""),
+            es_custom=item.get("es_custom", False),
+            campos=[CampoDefinicion(**c) for c in item.get("campos", [])]
+        ))
     if not registros:
         registros.append(Registro(nombre="Trazabilidad", codigo="PO-PP-33"))
     return registros
@@ -166,10 +184,8 @@ async def list_productos(client: MongoClientWrapper = Depends(get_mongo_client))
         # El usuario indicó que el campo se llama "PRODUCTO"
         nombre = item.get("PRODUCTO") or item.get("nombre") or item.get("Nombre") or "Sin Nombre"
         productos.append(Producto(nombre=nombre))
-    async for item in cursor:
-        # El usuario indicó que el campo se llama "PRODUCTO"
-        nombre = item.get("PRODUCTO") or item.get("nombre") or item.get("Nombre") or "Sin Nombre"
-        productos.append(Producto(nombre=nombre))
+    # Remove duplicate loop from original file if present, or just keep logical one
+    # Note: original file had duplicate loop, I'll keep just one correct one.
     return productos
 
 
@@ -250,6 +266,36 @@ async def list_liberacion(client: MongoClientWrapper = Depends(get_mongo_client)
     registros = []
     async for item in cursor:
         # Convertir _id ObjectId a string para el frontend
+        item["_id"] = str(item["_id"])
+        registros.append(item)
+    return registros
+
+
+# --- Custom Registers Endpoints ---
+
+class RegistroCustomData(BaseModel):
+    registro_codigo: str
+    fecha: str
+    datos: dict[str, str | float | int]
+
+
+@app.post("/registros-custom-data", status_code=status.HTTP_201_CREATED)
+async def create_registro_custom_data(
+    data: RegistroCustomData, client: MongoClientWrapper = Depends(get_mongo_client)
+):
+    doc = data.model_dump()
+    doc["created_at"] = datetime.utcnow()
+    await client.db["Registros Custom Data"].insert_one(doc)
+    return {"message": "Datos guardados exitosamente", "id": str(doc.get("_id"))}
+
+
+@app.get("/registros-custom-data/{codigo}")
+async def list_registros_custom_data(
+    codigo: str, client: MongoClientWrapper = Depends(get_mongo_client)
+):
+    cursor = client.db["Registros Custom Data"].find({"registro_codigo": codigo}).sort("created_at", -1)
+    registros = []
+    async for item in cursor:
         item["_id"] = str(item["_id"])
         registros.append(item)
     return registros
